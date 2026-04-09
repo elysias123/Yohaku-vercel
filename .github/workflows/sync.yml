@@ -1,0 +1,120 @@
+name: Sync Yohaku with upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * *" # 每24小时
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_OWNER: ${{ github.repository_owner }}
+      TARGET_REPO: Yohaku
+      MAIN_BRANCH: ${{ github.event.repository.default_branch }}
+      UPSTREAM_MAIN_BRANCH: main
+      COMMIT_AUTHOR_NAME: 'Elysia'
+      COMMIT_AUTHOR_EMAIL: '118418714+elysias123@users.noreply.github.com'
+      CO_AUTHOR_PRESET_NAME: 'Innei'
+      CO_AUTHOR_PRESET_EMAIL: 'tukon479@gmail.com'
+
+    steps:
+      - name: Checkout current repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Mirror upstream to target
+        id: mirror
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "GH_TOKEN is not set"
+            exit 1
+          fi
+          upstream_url="https://x-access-token:${GH_TOKEN}@github.com/innei-dev/Yohaku.git"
+          target_url="https://x-access-token:${GH_TOKEN}@github.com/${TARGET_OWNER}/${TARGET_REPO}.git"
+          rm -rf upstream.git
+          git clone --bare "$upstream_url" upstream.git
+          cd upstream.git
+          upstream_sha=$(git rev-parse refs/heads/${UPSTREAM_MAIN_BRANCH})
+          upstream_short_sha=$(git rev-parse --short refs/heads/${UPSTREAM_MAIN_BRANCH})
+          upstream_author_name=$(git log -1 --format='%an' refs/heads/${UPSTREAM_MAIN_BRANCH})
+          upstream_author_email=$(git log -1 --format='%ae' refs/heads/${UPSTREAM_MAIN_BRANCH})
+          upstream_co_author_line=$(git log -1 --format='%(trailers:key=Co-authored-by,valueonly)' refs/heads/${UPSTREAM_MAIN_BRANCH} | head -n 1)
+          echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+          echo "upstream_short_sha=$upstream_short_sha" >> "$GITHUB_OUTPUT"
+          echo "upstream_author_name=$upstream_author_name" >> "$GITHUB_OUTPUT"
+          echo "upstream_author_email=$upstream_author_email" >> "$GITHUB_OUTPUT"
+          echo "upstream_co_author_line=$upstream_co_author_line" >> "$GITHUB_OUTPUT"
+          target_ref_file="${RUNNER_TEMP}/target_ref.txt"
+          git ls-remote "$target_url" "refs/heads/${MAIN_BRANCH}" > "$target_ref_file"
+          target_sha=$(awk '{print $1}' "$target_ref_file")
+          if [ "$target_sha" = "$upstream_sha" ]; then
+            echo "Target main already equals upstream main. Skip mirror."
+            exit 0
+          fi
+          git remote add target "$target_url"
+          git push --force target \
+            +refs/heads/${UPSTREAM_MAIN_BRANCH}:refs/heads/${MAIN_BRANCH}
+
+      - name: Rewrite all commit authors
+        if: ${{ steps.mirror.outputs.upstream_sha != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          UPSTREAM_AUTHOR_NAME: ${{ steps.mirror.outputs.upstream_author_name }}
+          UPSTREAM_AUTHOR_EMAIL: ${{ steps.mirror.outputs.upstream_author_email }}
+          UPSTREAM_CO_AUTHOR_LINE: ${{ steps.mirror.outputs.upstream_co_author_line }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "GH_TOKEN is not set"
+            exit 1
+          fi
+          if [ -z "$COMMIT_AUTHOR_NAME" ] || [ -z "$COMMIT_AUTHOR_EMAIL" ]; then
+            echo "COMMIT_AUTHOR_NAME or COMMIT_AUTHOR_EMAIL is not set"
+            exit 1
+          fi
+          python3 -m pip install --upgrade pip git-filter-repo
+          target_url="https://x-access-token:${GH_TOKEN}@github.com/${TARGET_OWNER}/${TARGET_REPO}.git"
+          workdir="${RUNNER_TEMP}/target-repo"
+          rm -rf "$workdir"
+          git clone "$target_url" "$workdir"
+          cd "$workdir"
+
+          git config user.name "$COMMIT_AUTHOR_NAME"
+          git config user.email "$COMMIT_AUTHOR_EMAIL"
+
+          git fetch origin ${MAIN_BRANCH}
+          git checkout ${MAIN_BRANCH}
+          git reset --hard origin/${MAIN_BRANCH}
+
+          co_author_value=""
+          if [ "$UPSTREAM_AUTHOR_NAME" = "$COMMIT_AUTHOR_NAME" ] && [ "$UPSTREAM_AUTHOR_EMAIL" = "$COMMIT_AUTHOR_EMAIL" ]; then
+            if [ -n "$UPSTREAM_CO_AUTHOR_LINE" ]; then
+              co_author_value="$UPSTREAM_CO_AUTHOR_LINE"
+            elif [ -n "$CO_AUTHOR_PRESET_NAME" ] && [ -n "$CO_AUTHOR_PRESET_EMAIL" ]; then
+              co_author_value="${CO_AUTHOR_PRESET_NAME} <${CO_AUTHOR_PRESET_EMAIL}>"
+            fi
+          else
+            if [ -n "$UPSTREAM_AUTHOR_NAME" ] && [ -n "$UPSTREAM_AUTHOR_EMAIL" ]; then
+              co_author_value="${UPSTREAM_AUTHOR_NAME} <${UPSTREAM_AUTHOR_EMAIL}>"
+            elif [ -n "$UPSTREAM_CO_AUTHOR_LINE" ]; then
+              co_author_value="$UPSTREAM_CO_AUTHOR_LINE"
+            elif [ -n "$CO_AUTHOR_PRESET_NAME" ] && [ -n "$CO_AUTHOR_PRESET_EMAIL" ]; then
+              co_author_value="${CO_AUTHOR_PRESET_NAME} <${CO_AUTHOR_PRESET_EMAIL}>"
+            fi
+          fi
+          export CO_AUTHOR_VALUE="$co_author_value"
+
+          msg_callback_file="${GITHUB_WORKSPACE}/.github/scripts/msg_callback.py"
+
+          git filter-repo --force --refs "refs/heads/${MAIN_BRANCH}" \
+            --name-callback "return b'${COMMIT_AUTHOR_NAME}'" \
+            --email-callback "return b'${COMMIT_AUTHOR_EMAIL}'" \
+            --message-callback "$(cat "$msg_callback_file")"
+
+          git push --force origin ${MAIN_BRANCH}
