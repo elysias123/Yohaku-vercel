@@ -18,8 +18,6 @@ jobs:
       UPSTREAM_MAIN_BRANCH: main
       COMMIT_AUTHOR_NAME: 'Elysia'
       COMMIT_AUTHOR_EMAIL: '118418714+elysias123@users.noreply.github.com'
-      CO_AUTHOR_PRESET_NAME: 'Innei'
-      CO_AUTHOR_PRESET_EMAIL: 'tukon479@gmail.com'
 
     steps:
       - name: Checkout current repo
@@ -27,8 +25,26 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Validate commit author is repository owner
+        id: author_guard
+        run: |
+          owner_lower=$(echo "$TARGET_OWNER" | tr '[:upper:]' '[:lower:]')
+          author_name_lower=$(echo "$COMMIT_AUTHOR_NAME" | tr '[:upper:]' '[:lower:]')
+          author_email_lower=$(echo "$COMMIT_AUTHOR_EMAIL" | tr '[:upper:]' '[:lower:]')
+
+          if [ "$author_name_lower" = "$owner_lower" ] && \
+             { [ "$author_email_lower" = "${owner_lower}@users.noreply.github.com" ] || \
+               [[ "$author_email_lower" =~ ^[0-9]+\+${owner_lower}@users\.noreply\.github\.com$ ]]; }; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+            echo "Author check passed. Continue workflow."
+          else
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+            echo "Author check failed. Skip sync steps because COMMIT_AUTHOR_NAME/COMMIT_AUTHOR_EMAIL do not match repository owner."
+          fi
+
       - name: Mirror upstream to target
         id: mirror
+        if: ${{ steps.author_guard.outputs.allowed == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
@@ -45,12 +61,10 @@ jobs:
           upstream_short_sha=$(git rev-parse --short refs/heads/${UPSTREAM_MAIN_BRANCH})
           upstream_author_name=$(git log -1 --format='%an' refs/heads/${UPSTREAM_MAIN_BRANCH})
           upstream_author_email=$(git log -1 --format='%ae' refs/heads/${UPSTREAM_MAIN_BRANCH})
-          upstream_co_author_line=$(git log -1 --format='%(trailers:key=Co-authored-by,valueonly)' refs/heads/${UPSTREAM_MAIN_BRANCH} | head -n 1)
           echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
           echo "upstream_short_sha=$upstream_short_sha" >> "$GITHUB_OUTPUT"
           echo "upstream_author_name=$upstream_author_name" >> "$GITHUB_OUTPUT"
           echo "upstream_author_email=$upstream_author_email" >> "$GITHUB_OUTPUT"
-          echo "upstream_co_author_line=$upstream_co_author_line" >> "$GITHUB_OUTPUT"
           target_ref_file="${RUNNER_TEMP}/target_ref.txt"
           git ls-remote "$target_url" "refs/heads/${MAIN_BRANCH}" > "$target_ref_file"
           target_sha=$(awk '{print $1}' "$target_ref_file")
@@ -63,12 +77,11 @@ jobs:
             +refs/heads/${UPSTREAM_MAIN_BRANCH}:refs/heads/${MAIN_BRANCH}
 
       - name: Rewrite all commit authors
-        if: ${{ steps.mirror.outputs.upstream_sha != '' }}
+        if: ${{ steps.author_guard.outputs.allowed == 'true' && steps.mirror.outputs.upstream_sha != '' }}
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           UPSTREAM_AUTHOR_NAME: ${{ steps.mirror.outputs.upstream_author_name }}
           UPSTREAM_AUTHOR_EMAIL: ${{ steps.mirror.outputs.upstream_author_email }}
-          UPSTREAM_CO_AUTHOR_LINE: ${{ steps.mirror.outputs.upstream_co_author_line }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
             echo "GH_TOKEN is not set"
@@ -92,29 +105,8 @@ jobs:
           git checkout ${MAIN_BRANCH}
           git reset --hard origin/${MAIN_BRANCH}
 
-          co_author_value=""
-          if [ "$UPSTREAM_AUTHOR_NAME" = "$COMMIT_AUTHOR_NAME" ] && [ "$UPSTREAM_AUTHOR_EMAIL" = "$COMMIT_AUTHOR_EMAIL" ]; then
-            if [ -n "$UPSTREAM_CO_AUTHOR_LINE" ]; then
-              co_author_value="$UPSTREAM_CO_AUTHOR_LINE"
-            elif [ -n "$CO_AUTHOR_PRESET_NAME" ] && [ -n "$CO_AUTHOR_PRESET_EMAIL" ]; then
-              co_author_value="${CO_AUTHOR_PRESET_NAME} <${CO_AUTHOR_PRESET_EMAIL}>"
-            fi
-          else
-            if [ -n "$UPSTREAM_AUTHOR_NAME" ] && [ -n "$UPSTREAM_AUTHOR_EMAIL" ]; then
-              co_author_value="${UPSTREAM_AUTHOR_NAME} <${UPSTREAM_AUTHOR_EMAIL}>"
-            elif [ -n "$UPSTREAM_CO_AUTHOR_LINE" ]; then
-              co_author_value="$UPSTREAM_CO_AUTHOR_LINE"
-            elif [ -n "$CO_AUTHOR_PRESET_NAME" ] && [ -n "$CO_AUTHOR_PRESET_EMAIL" ]; then
-              co_author_value="${CO_AUTHOR_PRESET_NAME} <${CO_AUTHOR_PRESET_EMAIL}>"
-            fi
-          fi
-          export CO_AUTHOR_VALUE="$co_author_value"
-
-          msg_callback_file="${GITHUB_WORKSPACE}/.github/scripts/msg_callback.py"
-
           git filter-repo --force --refs "refs/heads/${MAIN_BRANCH}" \
             --name-callback "return b'${COMMIT_AUTHOR_NAME}'" \
-            --email-callback "return b'${COMMIT_AUTHOR_EMAIL}'" \
-            --message-callback "$(cat "$msg_callback_file")"
+            --email-callback "return b'${COMMIT_AUTHOR_EMAIL}'"
 
           git push --force origin ${MAIN_BRANCH}
