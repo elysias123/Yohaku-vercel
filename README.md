@@ -10,16 +10,10 @@
      - 目标：`<当前 owner>/Yohaku`（写）
 
 
-## 可配置变量
-
-在 `sync.yml` 中可修改：
+在 `sync.yml` 中修改自己的提交信息：
 
 ```yaml
 env:
-  HASH_FILE: build_hash
-  TARGET_OWNER: ${{ github.repository_owner }}
-  TARGET_REPO: Yohaku
-  TARGET_BRANCH: main
+    COMMIT_AUTHOR_NAME: '<作者名>'
+    COMMIT_AUTHOR_EMAIL: '<邮箱>'
 ```
-
-> 若需要，可改为固定 owner 或从 `workflow_dispatch` 输入读取。
