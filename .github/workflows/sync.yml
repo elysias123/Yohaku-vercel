@@ -25,23 +25,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Validate commit author is repository owner
-        id: author_guard
-        run: |
-          owner_lower=$(echo "$TARGET_OWNER" | tr '[:upper:]' '[:lower:]')
-          author_name_lower=$(echo "$COMMIT_AUTHOR_NAME" | tr '[:upper:]' '[:lower:]')
-          author_email_lower=$(echo "$COMMIT_AUTHOR_EMAIL" | tr '[:upper:]' '[:lower:]')
-
-          if [ "$author_name_lower" = "$owner_lower" ] && \
-             { [ "$author_email_lower" = "${owner_lower}@users.noreply.github.com" ] || \
-               [[ "$author_email_lower" =~ ^[0-9]+\+${owner_lower}@users\.noreply\.github\.com$ ]]; }; then
-            echo "allowed=true" >> "$GITHUB_OUTPUT"
-            echo "Author check passed. Continue workflow."
-          else
-            echo "allowed=false" >> "$GITHUB_OUTPUT"
-            echo "Author check failed. Skip sync steps because COMMIT_AUTHOR_NAME/COMMIT_AUTHOR_EMAIL do not match repository owner."
-          fi
-
       - name: Mirror upstream to target
         id: mirror
         if: ${{ steps.author_guard.outputs.allowed == 'true' }}
